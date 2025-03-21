@@ -2,6 +2,8 @@
 #include <cmath>
 #include <iostream>
 
+// these functions (lerp and get color) were used to generate
+// the list in Rectangle.h. Thought it was better to just have a table.
 static sf::Color lerpColor(const sf::Color &color1, const sf::Color &color2,
                            float t) {
   float r = color1.r + t * (color2.r - color1.r);
@@ -38,16 +40,21 @@ au::Rectangle::~Rectangle() {}
 
 sf::RectangleShape au::Rectangle::getRect() { return _rect; }
 
-void au::Rectangle::update(float time, std::vector<float> volume) {
+void au::Rectangle::update(std::vector<float> volume) {
   if (volume[_band] == 0) {
+    // if volume is 0 then slowly descend, makes for a nice effect.
     _rect.setSize(sf::Vector2f(_rect.getSize().x, _rect.getSize().y * .98f));
   } else {
+    // rate is used to slow the transition between the last value
+    // and a new one. A value of 1 means that the transition
+    // is instant, making for a reactive visualization, but sensitive
     float rate = 1.f;
     float newHeight =
         rate * (volume[_band] * _maxHeight) + (1.f - rate) * _rect.getSize().y;
     _rect.setSize(sf::Vector2f(_rect.getSize().x, newHeight));
   }
-
+  // since rects are drawn from the top left, and we just changed the top
+  // otherwise it would be an upsidedown visualization
   _rect.setOrigin(sf::Vector2f(0, _rect.getSize().y));
 }
 

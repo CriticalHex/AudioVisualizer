@@ -10,7 +10,11 @@ void smooth(float *x) {
 }
 
 int main() {
+  // very cool with three monitors!
   const UINT screens = 1;
+  // frequencies can be whatever you want, 1920 would be a bar per pixel
+  // (smooth), but try to keep it a divisor of 1920, so there aren't any weird
+  // gaps.
   const UINT frequencies = 96 * screens;
   Listener listener(frequencies);
   float volume;
@@ -22,13 +26,6 @@ int main() {
                           "Audio Visualizer", sf::Style::None, settings);
   window.setVerticalSyncEnabled(true);
   sf::Event event;
-  sf::Clock time;
-  // sf::Clock framerate_clock;
-  // sf::Clock frame_time_clock;
-  // double frame_time = 0;
-  // UINT frame_time_counter = 0;
-  // UINT frames = 0;
-  // UINT framerate = 0;
 
   sf::Vector2f winSize = sf::Vector2f(window.getSize().x, window.getSize().y);
 
@@ -54,7 +51,7 @@ int main() {
 
     volumes = listener.getFrequencyData();
     for (auto rec : rects) {
-      rec->update(time.getElapsedTime().asSeconds() / 30, volumes);
+      rec->update(volumes);
     }
 
     window.clear();
@@ -64,24 +61,6 @@ int main() {
     }
 
     window.display();
-
-    // frames++;
-
-    // if (framerate_clock.getElapsedTime().asMilliseconds() >= 1000) {
-    //   framerate = frames;
-    //   cout << framerate << endl;
-    //   frames = 0;
-    //   framerate_clock.restart();
-    // }
-
-    // frame_time += frame_time_clock.getElapsedTime().asMilliseconds();
-    // frame_time_clock.restart();
-    // if (frame_time_counter % 100 == 0) {
-    //   frame_time_counter = 0;
-    //   cout << "Ms per frame: " << frame_time / 100 << endl;
-    //   frame_time = 0;
-    // }
-    // frame_time_counter++;
   }
 
   for (int i = 0; i < rects.size(); i++) {

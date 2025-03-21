@@ -24,18 +24,19 @@ void Listener::initialize() {
     cout << "Failed to get the audio render endpoint" << endl;
   }
 
+  // if you want to read from the mic, instead of system audio
+  // hr = pDeviceEnumerator->GetDefaultAudioEndpoint(eCapture, eConsole,
+  //                                                 &pAudioCaptureDevice);
+  // if (FAILED(hr)) {
+  //   cout << "Failed to get audio capture endpoint" << endl;
+  // }
+
   hr =
       pAudioRenderDevice->Activate(__uuidof(IAudioMeterInformation), CLSCTX_ALL,
                                    NULL, (void **)&pMeterInformation);
   if (FAILED(hr)) {
     cout << "Failed to activate meterInformation device" << endl;
   }
-
-  // hr = pDeviceEnumerator->GetDefaultAudioEndpoint(eCapture, eConsole,
-  //                                                 &pAudioCaptureDevice);
-  // if (FAILED(hr)) {
-  //   cout << "Failed to get audio capture endpoint" << endl;
-  // }
 
   hr = pAudioRenderDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL,
                                     (void **)&pAudioClient);
@@ -72,6 +73,7 @@ void Listener::initialize() {
   hr = pAudioClient->GetService(__uuidof(IAudioCaptureClient),
                                 (void **)&pCaptureClient);
   if (FAILED(hr)) {
+    cout << "Failed to get capture client" << endl;
     switch (hr) {
     case E_POINTER:
       cout << "Parameter ppv is NULL." << endl;
@@ -99,7 +101,6 @@ void Listener::initialize() {
       cout << "The Windows audio service is not running." << endl;
       break;
     }
-    cout << "Failed to get capture client" << endl;
   }
 
   hr = pAudioClient->Start();
@@ -128,7 +129,6 @@ Listener::~Listener() {
   pCaptureClient->Release();
 
   CoUninitialize();
-  // fftwf_destroy_plan(plan);
 }
 
 void Listener::getAudioLevel(float *volume) {
@@ -156,16 +156,16 @@ vector<float> Listener::getFrequencyData() {
     cout << "Failed to get the next packet size" << endl;
   }
   while (audioIsPlaying() && data.size() < bufferSize * 8) {
-    // cout << "L: " << packetLength << endl;
     // GetBuffer takes this as INPUT first, how many to read,
     // then as OUTPUT sets it to how many were read.
     numFramesRetrieved = packetLength;
     hr = pCaptureClient->GetBuffer(&pBufferData, &numFramesRetrieved, &flags,
                                    NULL, NULL);
-    // cout << "N: " << numFramesRetrieved << endl;
     if (FAILED(hr)) {
       cout << "Failed to get buffer" << endl;
     }
+    // you can get if the audio was silent like this,
+    // but it doesn't seem to work very well.
     // if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
     //   cout << "Got silent" << endl;
     // }
@@ -185,9 +185,7 @@ vector<float> Listener::getFrequencyData() {
   }
 
   if (data.size() != 0) {
-    // cout << "D: " << data.size() << endl;
     size_t numFrames = data.size() / bytesPerFrame;
-    // cout << "NF: " << numFrames << endl;
 
     vector<float> mergedChannelData(numFrames);
 
@@ -200,6 +198,9 @@ vector<float> Listener::getFrequencyData() {
       // in the usual 2 channel case, there are 2 per frame.
       float *pFloatData = reinterpret_cast<float *>(data.data());
 
+      // because of the above cast, every two floats in the array is the two
+      // channels so this takes every two floats and averages them, because I'm
+      // not doing a surround sound visualization
       for (int i = 0; i < numFrames; i++) {
         float sum = 0.0f;
         for (int channel = 0; channel < pMixFormat->nChannels; channel++) {
@@ -218,19 +219,17 @@ vector<float> Listener::getFrequencyData() {
     }
     }
 
-    // windowing
+    // windowing, makes data better for the fast fourier transform
     for (int i = 0; i < numFrames; ++i) {
       float windowFactor = 0.5f * (1 - cos(2 * M_PI * i / (numFrames - 1)));
       mergedChannelData[i] *= windowFactor;
     }
 
-    // Create FFTW complex input/output arrays
     fftwf_complex *in =
         (fftwf_complex *)(fftwf_malloc(sizeof(fftwf_complex) * numFrames));
     fftwf_complex *out =
         (fftwf_complex *)(fftwf_malloc(sizeof(fftwf_complex) * numFrames));
 
-    // Copy data into FFTW input
     for (int i = 0; i < numFrames; ++i) {
       in[i][0] = mergedChannelData[i];
       in[i][1] = 0;
@@ -239,18 +238,26 @@ vector<float> Listener::getFrequencyData() {
     fftwf_plan fftPlan =
         fftwf_plan_dft_1d(numFrames, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
 
+    // excecute the fast fourier transform, converts data from the time domain
+    // recorded by the system, into data in the frequency domain. The time
+    // domain is amplitude over time, and the frequency domain is amplitude over
+    // frequency, as in, the amplitude of each frequency in the captured time.
+    // The longer you listen for, the more granular that data is. Currently,
+    // this program captures amplitude for each group of 44Hz. This could be as
+    // granular as an amplitude for each frequency, but it requires you to
+    // listen for too long, the frame rate is like a frame every 3 seconds
     fftwf_execute(fftPlan);
 
     fftwf_destroy_plan(fftPlan);
 
+    // the data is in complex numbers, so this gets the absolute value of them
     float magnitude[numFrames];
     for (int i = 0; i < numFrames; i++) {
       magnitude[i] = abs(out[i]);
     }
 
+    // like I explained above, this is about 44Hz
     float frequenciesPerIndex = float(sampleRate) / numFrames;
-
-    // int maxIndex = ceil(maxFrequency / frequenciesPerIndex);
 
     for (int i = 0; i < frequencyBins; i++) {
       // Map index to log space
@@ -260,14 +267,16 @@ vector<float> Listener::getFrequencyData() {
       // Convert frequency to an index in the FFT magnitude array
       float fftIndex = freq / frequenciesPerIndex;
       int indexLow = floor(fftIndex);
-      int indexHigh =
-          min(indexLow + 1, (int)numFrames - 1); // Ensure within range
-
+      // Ensure within range
+      int indexHigh = min(indexLow + 1, (int)numFrames - 1);
       // Interpolate between neighboring FFT bins
       float fraction = fftIndex - indexLow;
       float volume = (1.0f - fraction) * magnitude[indexLow] +
                      fraction * magnitude[indexHigh];
 
+      // this is for the sake of accentuating the higher frequencies, as they
+      // are usually of lower magnitude than the low frequencies, and due to the
+      // normalization, they are overpowered
       float normFreq = (freq - minFrequency) / (maxFrequency - minFrequency);
       float boostFactor = pow(normFreq, 10.f) * 20;
 
@@ -275,11 +284,13 @@ vector<float> Listener::getFrequencyData() {
     }
 
     // Normalize volume values
+    // this one normalizes to the loudest volume heard since the beginning of the program
     float currentMax =
         *max_element(frequencyVolumes.begin(), frequencyVolumes.end());
     if (currentMax > maxVolume) {
       maxVolume = currentMax;
     }
+    // while this one normalizes to the loudest volume this frame
     // maxVolume = *max_element(frequencyVolumes.begin(),
     // frequencyVolumes.end());
     if (maxVolume > 0) {
