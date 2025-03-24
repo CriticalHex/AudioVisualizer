@@ -242,10 +242,11 @@ vector<float> Listener::getFrequencyData() {
     // recorded by the system, into data in the frequency domain. The time
     // domain is amplitude over time, and the frequency domain is amplitude over
     // frequency, as in, the amplitude of each frequency in the captured time.
-    // The longer you listen for, the more granular that data is. Currently,
-    // this program captures amplitude for each group of 44Hz. This could be as
-    // granular as an amplitude for each frequency, but it requires you to
-    // listen for too long, the frame rate is like a frame every 3 seconds
+    // The longer you listen for, the more granular that data is. With a sample
+    // rate of 44kHz, this program captures amplitude for each group of 44Hz.
+    // This could be as granular as an amplitude for each frequency, but it
+    // requires you to listen for too long, the frame rate is like a frame every
+    // 3 seconds
     fftwf_execute(fftPlan);
 
     fftwf_destroy_plan(fftPlan);
@@ -271,31 +272,32 @@ vector<float> Listener::getFrequencyData() {
       int indexHigh = min(indexLow + 1, (int)numFrames - 1);
       // Interpolate between neighboring FFT bins
       float fraction = fftIndex - indexLow;
-      float volume = (1.0f - fraction) * magnitude[indexLow] +
-                     fraction * magnitude[indexHigh];
-
-      // this is for the sake of accentuating the higher frequencies, as they
-      // are usually of lower magnitude than the low frequencies, and due to the
-      // normalization, they are overpowered
-      float normFreq = (freq - minFrequency) / (maxFrequency - minFrequency);
-      float boostFactor = pow(normFreq, 10.f) * 20;
-
-      frequencyVolumes[i] = volume * (1.0f + boostFactor);
+      frequencyVolumes[i] = (1.0f - fraction) * magnitude[indexLow] +
+                            fraction * magnitude[indexHigh];
     }
 
     // Normalize volume values
-    // this one normalizes to the loudest volume heard since the beginning of the program
+    // this one normalizes to the loudest volume heard since the beginning of
+    // the program
     float currentMax =
         *max_element(frequencyVolumes.begin(), frequencyVolumes.end());
     if (currentMax > maxVolume) {
       maxVolume = currentMax;
     }
+
     // while this one normalizes to the loudest volume this frame
     // maxVolume = *max_element(frequencyVolumes.begin(),
     // frequencyVolumes.end());
+
+    // this style of normalization is for the sake of accentuating the higher
+    // frequencies, as they are usually of lower magnitude than the low
+    // frequencies, and with linear normalization, they are overpowered.
+    // Granted, this is *barely* non-linear, but it makes a big difference
+    float alpha = .01f;
     if (maxVolume > 0) {
       for (int i = 0; i < frequencyVolumes.size(); ++i) {
-        frequencyVolumes[i] /= maxVolume;
+        frequencyVolumes[i] =
+            log1p(alpha * frequencyVolumes[i]) / log1p(alpha * maxVolume);
       }
     }
   }

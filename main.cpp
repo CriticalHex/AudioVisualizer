@@ -3,12 +3,6 @@
 
 using namespace std;
 
-void smooth(float *x) {
-  if (*x == 0)
-    *x = 1;
-  *x = atan(*x + .2);
-}
-
 int main() {
   // very cool with three monitors!
   const UINT screens = 1;
