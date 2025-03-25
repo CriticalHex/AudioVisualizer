@@ -147,10 +147,8 @@ float lerp(float start, float end, float t) {
   return start + t * (end - start);
 }
 
-vector<float> Listener::getFrequencyData() {
+void Listener::fillBuffer(vector<BYTE> &data) {
   HRESULT hr;
-  vector<BYTE> data;
-  vector<float> frequencyVolumes(frequencyBins);
   hr = pCaptureClient->GetNextPacketSize(&packetLength);
   if (FAILED(hr)) {
     cout << "Failed to get the next packet size" << endl;
@@ -183,124 +181,158 @@ vector<float> Listener::getFrequencyData() {
       cout << "Failed to get the next packet size" << endl;
     }
   }
+}
 
-  if (data.size() != 0) {
-    size_t numFrames = data.size() / bytesPerFrame;
+vector<float> Listener::mergeChannels(vector<BYTE> &data, size_t frames) {
+  vector<float> mergedChannelData(frames);
 
-    vector<float> mergedChannelData(numFrames);
+  switch (pMixFormat->wBitsPerSample) {
+  case 32: {
+    // creating new array compressing the BYTES in data to FLOATS, so size
+    // shrinks by sizeof(float) = 4
+    // now, every float in the new array corresponds to a "sample"
+    // of which there are multiple, one per channel, per frame.
+    // in the usual 2 channel case, there are 2 per frame.
+    float *pFloatData = reinterpret_cast<float *>(data.data());
 
-    switch (pMixFormat->wBitsPerSample) {
-    case 32: {
-      // creating new array compressing the BYTES in data to FLOATS, so size
-      // shrinks by sizeof(float) = 4
-      // now, every float in the new array corresponds to a "sample"
-      // of which there are multiple, one per channel, per frame.
-      // in the usual 2 channel case, there are 2 per frame.
-      float *pFloatData = reinterpret_cast<float *>(data.data());
-
-      // because of the above cast, every two floats in the array is the two
-      // channels so this takes every two floats and averages them, because I'm
-      // not doing a surround sound visualization
-      for (int i = 0; i < numFrames; i++) {
-        float sum = 0.0f;
-        for (int channel = 0; channel < pMixFormat->nChannels; channel++) {
-          int index = (i * pMixFormat->nChannels) + channel;
-          sum += pFloatData[index];
-        }
-        mergedChannelData[i] = sum / pMixFormat->nChannels;
+    // because of the above cast, every two floats in the array is the two
+    // channels so this takes every two floats and averages them, because I'm
+    // not doing a surround sound visualization
+    for (int i = 0; i < frames; i++) {
+      float sum = 0.0f;
+      for (int channel = 0; channel < pMixFormat->nChannels; channel++) {
+        int index = (i * pMixFormat->nChannels) + channel;
+        sum += pFloatData[index];
       }
-      break;
+      mergedChannelData[i] = sum / pMixFormat->nChannels;
     }
-    default: {
-      // me no wanna :(
-      cout << "Only 32 bit audio format has been implemented!" << endl;
-      return vector<float>(frequencyBins);
-      break;
-    }
-    }
+    return mergedChannelData;
+  }
+  default: {
+    // me no wanna :(
+    cout << "Only 32 bit audio format has been implemented!" << endl;
+    return vector<float>(frequencyBins);
+  }
+  }
+}
 
-    // windowing, makes data better for the fast fourier transform
-    for (int i = 0; i < numFrames; ++i) {
-      float windowFactor = 0.5f * (1 - cos(2 * M_PI * i / (numFrames - 1)));
-      mergedChannelData[i] *= windowFactor;
-    }
+void window(vector<float> &data, size_t frames) {
+  // windowing, makes data better for the fast fourier transform
+  for (int i = 0; i < frames; ++i) {
+    float windowFactor = 0.5f * (1 - cos(2 * M_PI * i / (frames - 1)));
+    data[i] *= windowFactor;
+  }
+}
 
-    fftwf_complex *in =
-        (fftwf_complex *)(fftwf_malloc(sizeof(fftwf_complex) * numFrames));
-    fftwf_complex *out =
-        (fftwf_complex *)(fftwf_malloc(sizeof(fftwf_complex) * numFrames));
+void fft(vector<float> amplitudeOverTime, size_t frames,
+         float *amplitudePerFrequency) {
+  fftwf_complex *in =
+      (fftwf_complex *)(fftwf_malloc(sizeof(fftwf_complex) * frames));
+  fftwf_complex *out =
+      (fftwf_complex *)(fftwf_malloc(sizeof(fftwf_complex) * frames));
 
-    for (int i = 0; i < numFrames; ++i) {
-      in[i][0] = mergedChannelData[i];
-      in[i][1] = 0;
-    }
+  for (int i = 0; i < frames; ++i) {
+    in[i][0] = amplitudeOverTime[i];
+    in[i][1] = 0;
+  }
 
-    fftwf_plan fftPlan =
-        fftwf_plan_dft_1d(numFrames, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+  fftwf_plan fftPlan =
+      fftwf_plan_dft_1d(frames, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
 
-    // excecute the fast fourier transform, converts data from the time domain
-    // recorded by the system, into data in the frequency domain. The time
-    // domain is amplitude over time, and the frequency domain is amplitude over
-    // frequency, as in, the amplitude of each frequency in the captured time.
-    // The longer you listen for, the more granular that data is. With a sample
-    // rate of 44kHz, this program captures amplitude for each group of 44Hz.
-    // This could be as granular as an amplitude for each frequency, but it
-    // requires you to listen for too long, the frame rate is like a frame every
-    // 3 seconds
-    fftwf_execute(fftPlan);
+  // excecute the fast fourier transform, converts data from the time domain
+  // recorded by the system, into data in the frequency domain. The time
+  // domain is amplitude over time, and the frequency domain is amplitude over
+  // frequency, as in, the amplitude of each frequency in the captured time.
+  // The longer you listen for, the more granular that data is. With a sample
+  // rate of 44kHz, this program captures amplitude for each group of 44Hz.
+  // This could be as granular as an amplitude for each frequency, but it
+  // requires you to listen for too long, the frame rate is like a frame every
+  // 3 seconds
+  fftwf_execute(fftPlan);
 
-    fftwf_destroy_plan(fftPlan);
+  fftwf_destroy_plan(fftPlan);
 
-    // the data is in complex numbers, so this gets the absolute value of them
-    float magnitude[numFrames];
-    for (int i = 0; i < numFrames; i++) {
-      magnitude[i] = abs(out[i]);
-    }
+  // the data is in complex numbers, so this gets the absolute value of them
+  for (int i = 0; i < frames; i++) {
+    amplitudePerFrequency[i] = abs(out[i]);
+  }
+}
 
-    // like I explained above, this is about 44Hz
-    float frequenciesPerIndex = float(sampleRate) / numFrames;
+vector<float> Listener::mapDataToFrequencyBins(float *amplitudePerFrequency,
+                                               size_t frames) {
+  // this is about 44Hz for a sample rate of 44kHz
+  float frequenciesPerIndex = float(sampleRate) / frames;
+  vector<float> frequencyVolumes(frequencyBins);
 
-    for (int i = 0; i < frequencyBins; i++) {
-      // Map index to log space
-      float freq = minFrequency *
-                   pow(10.f, (float(i) / (frequencyBins - 1)) * log10(ratio));
+  for (int i = 0; i < frequencyBins; i++) {
+    // Map index to log space
+    float freq = minFrequency *
+                 pow(10.f, (float(i) / (frequencyBins - 1)) * log10(ratio));
 
-      // Convert frequency to an index in the FFT magnitude array
-      float fftIndex = freq / frequenciesPerIndex;
-      int indexLow = floor(fftIndex);
-      // Ensure within range
-      int indexHigh = min(indexLow + 1, (int)numFrames - 1);
-      // Interpolate between neighboring FFT bins
-      float fraction = fftIndex - indexLow;
-      frequencyVolumes[i] = (1.0f - fraction) * magnitude[indexLow] +
-                            fraction * magnitude[indexHigh];
-    }
-
-    // Normalize volume values
-    // this one normalizes to the loudest volume heard since the beginning of
-    // the program
-    float currentMax =
-        *max_element(frequencyVolumes.begin(), frequencyVolumes.end());
-    if (currentMax > maxVolume) {
-      maxVolume = currentMax;
-    }
-
-    // while this one normalizes to the loudest volume this frame
-    // maxVolume = *max_element(frequencyVolumes.begin(),
-    // frequencyVolumes.end());
-
-    // this style of normalization is for the sake of accentuating the higher
-    // frequencies, as they are usually of lower magnitude than the low
-    // frequencies, and with linear normalization, they are overpowered.
-    // Granted, this is *barely* non-linear, but it makes a big difference
-    float alpha = .01f;
-    if (maxVolume > 0) {
-      for (int i = 0; i < frequencyVolumes.size(); ++i) {
-        frequencyVolumes[i] =
-            log1p(alpha * frequencyVolumes[i]) / log1p(alpha * maxVolume);
-      }
-    }
+    // Convert frequency to an index in the FFT magnitude array
+    float fftIndex = freq / frequenciesPerIndex;
+    int indexLow = floor(fftIndex);
+    // Ensure within range
+    int indexHigh = min(indexLow + 1, (int)frames - 1);
+    // Interpolate between neighboring FFT bins
+    float fraction = fftIndex - indexLow;
+    frequencyVolumes[i] = (1.0f - fraction) * amplitudePerFrequency[indexLow] +
+                          fraction * amplitudePerFrequency[indexHigh];
   }
 
   return frequencyVolumes;
+}
+
+void Listener::normalizeVolume(vector<float> &volumes) {
+  // Normalize volume values
+  // this one normalizes to the loudest volume heard since the beginning of
+  // the program
+  float currentMax = *max_element(volumes.begin(), volumes.end());
+  if (currentMax > maxVolume) {
+    maxVolume = currentMax;
+  } else {
+    // if we aren't finding louder volumes, reduce the max slowly to prevent a
+    // single dominant volume that occurred in a different song for example
+    maxVolume *= .999f;
+  }
+
+  // while this one normalizes to the loudest volume this frame
+  // maxVolume = *max_element(frequencyVolumes.begin(),
+  // frequencyVolumes.end());
+
+  // this style of normalization is for the sake of accentuating the higher
+  // frequencies, as they are usually of lower magnitude than the low
+  // frequencies, and with linear normalization, they are overpowered.
+  // Granted, this is *barely* non-linear, but it makes a big difference
+  float alpha = .02f;
+  if (maxVolume > 0) {
+    for (int i = 0; i < volumes.size(); ++i) {
+      volumes[i] = log1p(alpha * volumes[i]) / log1p(alpha * maxVolume);
+    }
+  }
+}
+
+vector<float> Listener::getFrequencyData() {
+
+  vector<BYTE> amplitudeOverTime;
+  fillBuffer(amplitudeOverTime);
+
+  if (amplitudeOverTime.size() != 0) {
+    size_t frames = amplitudeOverTime.size() / bytesPerFrame;
+
+    vector<float> mergedAmplitudeOverTime =
+        mergeChannels(amplitudeOverTime, frames);
+    window(mergedAmplitudeOverTime, frames);
+
+    float amplitudePerFrequency[frames];
+    fft(mergedAmplitudeOverTime, frames, amplitudePerFrequency);
+
+    vector<float> volumePerFrequency =
+        mapDataToFrequencyBins(amplitudePerFrequency, frames);
+
+    normalizeVolume(volumePerFrequency);
+    return volumePerFrequency;
+  }
+
+  return vector<float>(frequencyBins);
 }

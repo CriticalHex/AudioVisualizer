@@ -1,4 +1,4 @@
-TARGET = AudioVisualizer.exe #the name of the compiled executable
+TARGET = WASAPI.exe #the name of the compiled executable
 SRC_FILES = main.cpp Listener.cpp Rectangle.cpp
 
 OBJECTS = $(SRC_FILES:.cpp=.o) #signifies a relationship between the src_files and their to be compiled .o files

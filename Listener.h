@@ -51,13 +51,9 @@ private:
   IAudioClient *pAudioClient = nullptr;
   WAVEFORMATEX *pMixFormat = nullptr;
   IAudioCaptureClient *pCaptureClient = nullptr;
-  fftwf_plan plan;
-  fftwf_complex *in;
-  fftwf_complex *out;
-  size_t ioSize;
 
   int sampleRate;
-  int frequencyBins = 25;
+  int frequencyBins = 96;
   float availableFrequencies;
   float minFrequency = 20.0f;
   float maxFrequency = 20000.0f;
@@ -72,7 +68,11 @@ private:
   DWORD flags;
 
   bool audioIsPlaying();
-  void generatePlan();
+  void fillBuffer(std::vector<BYTE> &data);
+  std::vector<float> mergeChannels(std::vector<BYTE> &data, size_t frames);
+  std::vector<float> mapDataToFrequencyBins(float *amplitudePerFrequency,
+                                            size_t frames);
+  void normalizeVolume(std::vector<float> &volumes);
 
 public:
   void getAudioLevel(float *out);
